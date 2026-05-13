@@ -2,7 +2,7 @@ pipeline {
   agent any
 
   environment {
-    DOCKER_HUB_USER = 'ramanijadala'       
+    DOCKER_HUB_USER = 'mnlove'
     IMAGE_BASE = 'todo-app'
     IMAGE_TAG = "build-${BUILD_NUMBER}"
     LOCAL_IMAGE = "${IMAGE_BASE}:${IMAGE_TAG}"
@@ -12,121 +12,88 @@ pipeline {
   }
 
   stages {
+
     stage('Checkout') {
       steps {
-        git branch: 'main', url: 'https://github.com/jadalaramani/todo_cicd_end-end_project.git'
+        git branch: 'main', url: 'https://github.com/Mchirram41/todo_cicd_end-end_project.git'
       }
     }
 
-stage('SONARQUBE ANALYSIS') {
-  environment {
-    SCANNER_HOME = tool 'SonarQubeScanner' 
-  }
-  steps {
-    withSonarQubeEnv('SonarQubeServer') { 
-      sh """
-        ${SCANNER_HOME}/bin/sonar-scanner
-      """
-    }
-  }
-}
-stage('QUALITY GATE') {
-    steps {
-        timeout(time: 2, unit: 'MINUTES') {   
-            waitForQualityGate abortPipeline: true
-        }
-    }
-}
-    stage('Docker Build') {
+    stage('SONARQUBE ANALYSIS') {
+      environment {
+        SCANNER_HOME = tool 'SonarQube'
+      }
       steps {
-        sh "docker build -t $LOCAL_IMAGE ."
+        withSonarQubeEnv('SonarQube') {
+          sh "${SCANNER_HOME}/bin/sonar-scanner"
+        }
+      }
+    }
+
+    stage('Quality Gate') {
+      steps {
+        timeout(time: 2, unit: 'MINUTES') {
+          waitForQualityGate abortPipeline: true
+        }
+      }
+    }
+
+    stage('Docker Image Build') {
+      steps {
+        sh "docker build -t ${LOCAL_IMAGE} ."
       }
     }
 
     stage('Tag for Docker Hub') {
       steps {
-        sh "docker tag $LOCAL_IMAGE $REMOTE_IMAGE"
+        sh "docker tag ${LOCAL_IMAGE} ${REMOTE_IMAGE}"
       }
     }
+
     stage('Trivy Vulnerability Scan') {
       steps {
         sh """
           echo 'Running Trivy vulnerability scan...'
-               docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image $REMOTE_IMAGE 
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image ${REMOTE_IMAGE}
         """
       }
     }
 
     stage('Login to Docker Hub') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-         sh ' docker login -u $DOCKER_USER  -p $DOCKER_PASS'
+        withCredentials([usernamePassword(credentialsId: 'DockerHub',
+          usernameVariable: 'DOCKER_USER',
+          passwordVariable: 'DOCKER_PASS')]) {
+
+          sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
         }
       }
     }
 
     stage('Push to Docker Hub') {
       steps {
-        sh "docker push $REMOTE_IMAGE"
+        sh "docker push ${REMOTE_IMAGE}"
       }
     }
+    stage('Update ArgoCD Repo') {
+    steps {
+        cleanWs()
+        withCredentials([string(credentialsId: 'github-token', variable: 'GIT_TOKEN')]) {
+            sh '''
+                git config --global user.email "jenkins@example.com"
+                git config --global user.name "jenkins"
 
-    stage('Docker Run (optional)') {
-      steps {
-        script {
-          sh "docker rm -f $CONTAINER_NAME || true"
-          sh "docker run -d --name $CONTAINER_NAME -p $PORT:3000 $LOCAL_IMAGE"
+                git clone https://github.com/Mchirram41/argocd.git
+                cd argocd/k8s
+
+                sed -i 's#image: .*#image: Mchirram41/todo-app:22#g' deployment.yml
+
+                git add .
+                git commit -m "Update image tag 22"
+                git push https://Mchirram41:${GIT_TOKEN}@github.com/Mchirram41/argocd.git main
+            '''
         }
-      }
     }
-stage('eks deploy'){
- steps {
-    withKubeConfig(
-      credentialsId: 'kubeconfig',
-      clusterName: 'my-cluster',
-      contextName: 'my-cluster',
-      namespace: 'todons',
-      restrictKubeConfigAccess: false,
-      serverUrl: 'https://71EBBEA6021B1F195E6BA6F54211B023.gr7.us-east-1.eks.amazonaws.com'
-    ) {
-      sh '''
-        echo "🚀 Deploying application via Helm..."
-        echo "📁 Current workspace: $(pwd)"
-        echo "📂 Checking for Helm chart..."
-        ls -l ./helm
-        helm upgrade --install todo-release ./helm \
-          --namespace todons \
-          --set image.repository=${DOCKER_HUB_USER}/${IMAGE_BASE} \
-          --set image.tag=${IMAGE_TAG} \
-          --set service.type=LoadBalancer
-
-        echo "✅ Deployment triggered"
-        sleep 60
-        kubectl get svc -n todons
-      '''
-    }
-  }
 }
-}
-
-  post {
-    success {
-      echo "✅ Image pushed: $REMOTE_IMAGE and Build Success"
-    }
-    failure {
-      echo "❌ Build failed"
-    }
-      always {
-    emailext (
-               subject: "${env.JOB_NAME} - Build #${env.BUILD_NUMBER} - ${currentBuild.currentResult}",
-               body: "Build details: ${env.BUILD_URL}",
-                to: 'mindcircuit2025@gmail.com',
-                from: 'jenkins@example.com',
-                replyTo: 'jenkins@example.com',
-                
-                
-            )
-      }
-    
   }
 }
